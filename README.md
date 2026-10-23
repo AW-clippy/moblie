@@ -86,3 +86,12 @@ All clipboard data is encrypted using AES-256-GCM. Set a strong 32-character sec
 - **Internet** - Communicates with Windows PC over local network
 - **Foreground Service** - Keeps sync running in background
 - **Network State** - Discovers Windows PC on WiFi
+
+## Links
+
+- **GitHub Repository**: https://github.com/AW-clippy/moblie
+- **Windows Client**: https://github.com/AW-clippy/windows
+
+## License
+
+MIT

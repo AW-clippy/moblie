@@ -4,6 +4,23 @@
 # For more details, see
 #   https://d.android.com/r/tools/r8/keep-rules
 
+# Keep all AWClippy application classes
+-keep class com.awclippy.android.** { *; }
+
+# Keep Accessibility Service implementation
+-keep class * extends android.accessibilityservice.AccessibilityService { *; }
+
+# Keep all Services
+-keep class * extends android.app.Service { *; }
+
+# Keep Activities
+-keep class * extends android.app.Activity { *; }
+
+# Keep networking and NSD classes
+-keep class android.net.nsd.** { *; }
+-keep class java.net.** { *; }
+-keep class java.nio.** { *; }
+
 # If your project uses WebView with JS, uncomment the following
 # and specify the fully qualified class name to the JavaScript interface
 # class:
