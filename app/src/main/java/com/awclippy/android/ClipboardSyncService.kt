@@ -464,7 +464,13 @@ class ClipboardSyncService : Service() {
             return
         }
         
-        val subnet = localIp.hostAddress.substringBeforeLast(".")
+        val hostAddress = localIp.hostAddress
+        if (hostAddress == null) {
+            Log.e(TAG, "Network scan: Host address is null")
+            return
+        }
+        
+        val subnet = hostAddress.substringBeforeLast(".")
         Log.d(TAG, "Network scan: Scanning subnet $subnet.*")
         
         // Try common IP addresses in parallel
