@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AW Clippy</string>
+    <string name="accessibility_service_description">Allows AW Clippy to automatically detect when you copy text and sync it with your Windows PC. No data is collected or stored.</string>
+    <string name="send_to_pc">Send to PC</string>
+</resources>

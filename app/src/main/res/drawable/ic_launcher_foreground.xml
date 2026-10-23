@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Blue circle background -->
+    <path
+        android:pathData="M54,54m-44,0a44,44 0,1 1,88 0a44,44 0,1 1,-88 0"
+        android:fillColor="#2196F3"/>
+    
+    <!-- Letter A - clean and bold -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,70 L34,58 L44,58 L48,70 L56,70 L44,38 L34,38 L22,70 Z M39,44 L42,54 L36,54 Z"/>
+    
+    <!-- Letter W - using clear V-V-V pattern -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M56,38 L60,56 L64,38 L70,38 L74,56 L78,38 L86,38 L80,70 L74,70 L70,52 L66,70 L60,70 L54,38 Z"/>
+</vector>
