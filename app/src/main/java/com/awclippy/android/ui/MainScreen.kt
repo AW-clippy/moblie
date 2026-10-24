@@ -1,9 +1,5 @@
 package com.awclippy.android.ui
 
-import android.content.Context
-import android.content.Intent
-import android.provider.Settings
-import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -12,20 +8,21 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.awclippy.android.ClipboardAccessibilityService
-import com.awclippy.android.ClipboardSyncService
 import com.awclippy.android.R
 
 @Composable
 fun MainScreen(
     accessibilityEnabled: Boolean,
     serviceRunning: Boolean,
-    windowsConnected: Boolean,
+    networkName: String,
+    synchronizedPcName: String?,
+    isSynchronized: Boolean,
+    lastSyncTime: Long = 0L,
+    onRefresh: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onToggleService: () -> Unit,
     onSendMessage: (String) -> Unit
@@ -39,21 +36,88 @@ fun MainScreen(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // App Logo
             Image(
                 painter = painterResource(id = R.mipmap.ic_launcher),
                 contentDescription = "AWClippy Logo",
-                modifier = Modifier.size(80.dp)
+                modifier = Modifier.size(72.dp)
             )
+
+            // Dynamic Synchronization Header Banner
+            if (serviceRunning) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isSynchronized) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        }
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            painter = painterResource(
+                                id = if (isSynchronized) R.drawable.ic_check_circle else R.drawable.ic_search
+                            ),
+                            contentDescription = null,
+                            tint = if (isSynchronized) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            },
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (isSynchronized && synchronizedPcName != null) {
+                                    "Synchronized with $synchronizedPcName"
+                                } else {
+                                    "Connected to $networkName"
+                                },
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isSynchronized) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                }
+                            )
+                            Text(
+                                text = if (isSynchronized) {
+                                    "Clipboard synchronization is active"
+                                } else {
+                                    "Searching for Windows PC on network..."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (isSynchronized) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                } else {
+                                    MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
             
-            // Status Card
+            // Detailed Status Card
             StatusCard(
                 accessibilityEnabled = accessibilityEnabled,
                 serviceRunning = serviceRunning,
-                windowsConnected = windowsConnected
+                networkName = networkName,
+                synchronizedPcName = synchronizedPcName,
+                isSynchronized = isSynchronized,
+                lastSyncTime = lastSyncTime
             )
             
             // Enable Accessibility Button (conditional)
@@ -62,25 +126,47 @@ fun MainScreen(
                     onClick = onOpenAccessibilitySettings,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Enable Accessibility")
+                    Text("Enable Clipboard Accessibility")
                 }
             }
             
-            // Service Toggle Button
-            Button(
-                onClick = onToggleService,
+            // Action Buttons
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                enabled = accessibilityEnabled,
-                colors = if (serviceRunning) {
-                    ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                        contentColor = MaterialTheme.colorScheme.onError
-                    )
-                } else {
-                    ButtonDefaults.buttonColors()
-                }
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(if (serviceRunning) "Stop Service" else "Start Service")
+                // Service Toggle Button
+                Button(
+                    onClick = onToggleService,
+                    modifier = Modifier.weight(1f),
+                    enabled = accessibilityEnabled,
+                    colors = if (serviceRunning) {
+                        ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        )
+                    } else {
+                        ButtonDefaults.buttonColors()
+                    }
+                ) {
+                    Text(if (serviceRunning) "Stop Service" else "Start Service")
+                }
+
+                // Re-sync / Search PC Button (only when running)
+                if (serviceRunning) {
+                    OutlinedButton(
+                        onClick = onRefresh,
+                        contentPadding = PaddingValues(horizontal = 12.dp)
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_search),
+                            contentDescription = "Search",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Search PC")
+                    }
+                }
             }
             
             // Divider
@@ -96,7 +182,11 @@ fun MainScreen(
             )
             
             Text(
-                text = "Type or paste text to send to Windows:",
+                text = if (isSynchronized && synchronizedPcName != null) {
+                    "Type or paste text to send directly to $synchronizedPcName:"
+                } else {
+                    "Type or paste text to send to Windows (queued until connected):"
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -106,9 +196,6 @@ fun MainScreen(
                 enabled = serviceRunning,
                 onSendMessage = onSendMessage
             )
-            
-            // Spacer
-            Spacer(modifier = Modifier.height(8.dp))
             
             // Divider
             HorizontalDivider()
@@ -123,7 +210,7 @@ fun MainScreen(
             )
             
             Text(
-                text = "Text copied on Windows will automatically appear on your Android clipboard.",
+                text = "Text copied on Windows will automatically appear on your Android clipboard as soon as synchronization is established.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,

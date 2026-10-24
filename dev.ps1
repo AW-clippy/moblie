@@ -120,12 +120,16 @@ if (-not $SkipBuild) {
     
     $installSuccess = $true
     foreach ($deviceId in $targetDevices) {
-        Write-Host "  Installing on $deviceId..." -ForegroundColor DarkYellow
-        adb -s $deviceId install -r app\build\outputs\apk\debug\app-debug.apk 2>&1 | Out-Null
+        $installOutput = adb -s $deviceId install -r app\build\outputs\apk\debug\app-debug.apk 2>&1
+        if ($LASTEXITCODE -ne 0 -and "$installOutput" -match "INSTALL_FAILED_UPDATE_INCOMPATIBLE") {
+            Write-Host "  [!] Signature mismatch (switching from release build). Reinstalling cleanly..." -ForegroundColor Yellow
+            adb -s $deviceId uninstall com.awclippy.android | Out-Null
+            $installOutput = adb -s $deviceId install app\build\outputs\apk\debug\app-debug.apk 2>&1
+        }
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  [OK] Installed on $deviceId" -ForegroundColor Green
         } else {
-            Write-Host "  [X] Failed to install on $deviceId" -ForegroundColor Red
+            Write-Host "  [X] Failed to install on ${deviceId}: $installOutput" -ForegroundColor Red
             $installSuccess = $false
         }
     }

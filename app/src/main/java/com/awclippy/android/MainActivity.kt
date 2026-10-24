@@ -12,8 +12,6 @@ import com.awclippy.android.ui.theme.AWClippyTheme
 
 class MainActivity : ComponentActivity() {
 
-    private var updateTrigger by mutableIntStateOf(0)
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
@@ -21,28 +19,46 @@ class MainActivity : ComponentActivity() {
             AWClippyTheme {
                 var accessibilityEnabled by remember { mutableStateOf(isAccessibilityServiceEnabled()) }
                 var serviceRunning by remember { mutableStateOf(ClipboardSyncService.instance != null) }
-                var windowsConnected by remember { mutableStateOf(false) }
+                var networkName by remember { mutableStateOf(ClipboardSyncService.instance?.getNetworkName() ?: "Local Network") }
+                var synchronizedPcName by remember { mutableStateOf(ClipboardSyncService.instance?.getPcName()) }
+                var isSynchronized by remember { mutableStateOf(ClipboardSyncService.instance?.isDeviceSynchronized() == true) }
+                var lastSyncTime by remember { mutableLongStateOf(ClipboardSyncService.instance?.getLastSyncTime() ?: 0L) }
                 
-                // Update status every second
+                // Update status every 800ms
                 LaunchedEffect(Unit) {
                     while (true) {
-                        kotlinx.coroutines.delay(1000)
+                        kotlinx.coroutines.delay(800)
+                        val service = ClipboardSyncService.instance
                         accessibilityEnabled = isAccessibilityServiceEnabled()
-                        serviceRunning = ClipboardSyncService.instance != null
-                        windowsConnected = ClipboardSyncService.instance?.hasWindowsDevice() == true
+                        serviceRunning = service != null
+                        networkName = service?.getNetworkName() ?: "Local Network"
+                        synchronizedPcName = service?.getPcName()
+                        isSynchronized = service?.isDeviceSynchronized() == true
+                        lastSyncTime = service?.getLastSyncTime() ?: 0L
                     }
                 }
                 
                 MainScreen(
                     accessibilityEnabled = accessibilityEnabled,
                     serviceRunning = serviceRunning,
-                    windowsConnected = windowsConnected,
+                    networkName = networkName,
+                    synchronizedPcName = synchronizedPcName,
+                    isSynchronized = isSynchronized,
+                    lastSyncTime = lastSyncTime,
+                    onRefresh = {
+                        val service = ClipboardSyncService.instance
+                        if (service != null) {
+                            service.triggerRediscovery()
+                            Toast.makeText(this@MainActivity, "Searching for Windows PC...", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(this@MainActivity, "Start service first", Toast.LENGTH_SHORT).show()
+                        }
+                    },
                     onOpenAccessibilitySettings = {
                         openAccessibilitySettings()
                     },
                     onToggleService = {
                         toggleService()
-                        // Trigger recomposition
                         serviceRunning = ClipboardSyncService.instance != null
                     },
                     onSendMessage = { message ->
@@ -67,11 +83,9 @@ class MainActivity : ComponentActivity() {
         val serviceRunning = ClipboardSyncService.instance != null
         
         if (serviceRunning) {
-            // Stop service
             ClipboardSyncService.instance?.stopSelf()
             Toast.makeText(this, "Service stopped", Toast.LENGTH_SHORT).show()
         } else {
-            // Start service
             if (!isAccessibilityServiceEnabled()) {
                 Toast.makeText(
                     this,
@@ -100,14 +114,15 @@ class MainActivity : ComponentActivity() {
             return
         }
         
-        if (!syncService.hasWindowsDevice()) {
-            Toast.makeText(this, "Searching for Windows PC...", Toast.LENGTH_SHORT).show()
+        val pcName = syncService.getPcName()
+        if (syncService.isDeviceSynchronized() && pcName != null) {
+            Toast.makeText(this, "✅ Sent to $pcName", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "⏳ Queued: searching for PC on network...", Toast.LENGTH_SHORT).show()
         }
         
-        android.util.Log.d("AWClippy", "[ANDROID→WINDOWS] Manual send from MainActivity: ${text.length} bytes")
+        android.util.Log.d("AWClippy", "[ANDROID→WINDOWS] Manual send from MainActivity: ${text.length} chars")
         syncService.sendClipboardFromAccessibility(text)
-        
-        Toast.makeText(this, "✅ Sent to Windows!", Toast.LENGTH_SHORT).show()
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
@@ -119,4 +134,3 @@ class MainActivity : ComponentActivity() {
         return enabledServices?.contains(service) == true
     }
 }
-

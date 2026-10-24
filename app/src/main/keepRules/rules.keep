@@ -4,22 +4,27 @@
 # For more details, see
 #   https://d.android.com/r/tools/r8/keep-rules
 
-# Keep all AWClippy application classes
--keep class com.awclippy.android.** { *; }
+# Keep only public API classes (not internal implementation)
+-keep public class com.awclippy.android.ClipboardSyncService
+-keep public class com.awclippy.android.ClipboardAccessibilityService
+-keep public class com.awclippy.android.MainActivity
+-keep public class com.awclippy.android.ProcessTextActivity
 
-# Keep Accessibility Service implementation
--keep class * extends android.accessibilityservice.AccessibilityService { *; }
+# Keep Service lifecycle methods
+-keepclassmembers class * extends android.app.Service {
+    public <init>(...);
+    public android.os.IBinder onBind(...);
+    public void onCreate();
+    public int onStartCommand(...);
+    public void onDestroy();
+}
 
-# Keep all Services
--keep class * extends android.app.Service { *; }
-
-# Keep Activities
--keep class * extends android.app.Activity { *; }
-
-# Keep networking and NSD classes
--keep class android.net.nsd.** { *; }
--keep class java.net.** { *; }
--keep class java.nio.** { *; }
+# Keep Accessibility Service methods
+-keepclassmembers class * extends android.accessibilityservice.AccessibilityService {
+    public void onAccessibilityEvent(...);
+    public void onInterrupt();
+    public void onServiceConnected();
+}
 
 # If your project uses WebView with JS, uncomment the following
 # and specify the fully qualified class name to the JavaScript interface
