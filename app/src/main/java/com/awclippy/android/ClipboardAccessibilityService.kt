@@ -39,9 +39,15 @@ class ClipboardAccessibilityService : AccessibilityService() {
         android.util.Log.d("AWClippy", "Clipboard listener installed")
         android.util.Log.d("AWClippy", "========================================")
         
-        // Start the sync service
-        val intent = Intent(this, ClipboardSyncService::class.java)
-        startForegroundService(intent)
+        // Only start the sync service if it's not already running AND user requested it
+        if (ClipboardSyncService.isServiceRequested(this)) {
+            if (ClipboardSyncService.instance == null || !ClipboardSyncService.isServiceRunning) {
+                val intent = Intent(this, ClipboardSyncService::class.java).apply {
+                    action = ClipboardSyncService.ACTION_START_SERVICE
+                }
+                startForegroundService(intent)
+            }
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -57,6 +63,12 @@ class ClipboardAccessibilityService : AccessibilityService() {
     }
 
     private fun handleClipboardChange() {
+        // If the service is stopped by user, ignore clipboard changes
+        if (!ClipboardSyncService.isServiceRequested(this)) {
+            android.util.Log.d("AWClippy", "[ANDROID→WINDOWS] Service is stopped by user, ignoring clipboard change")
+            return
+        }
+
         val clip = clipboardManager?.primaryClip ?: return
         if (clip.itemCount == 0) return
         
@@ -84,7 +96,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
         
         // Check if sync service is available
         val syncService = ClipboardSyncService.instance
-        if (syncService == null) {
+        if (syncService == null || !ClipboardSyncService.isServiceRunning) {
             android.util.Log.w("AWClippy", "[ANDROID→WINDOWS] ⏳ Sync service not ready yet, queueing clipboard...")
             pendingClipboardText = text
             
@@ -114,11 +126,16 @@ class ClipboardAccessibilityService : AccessibilityService() {
         val maxAttempts = 50 // 5 seconds max
         
         while (attempts < maxAttempts) {
+            if (!ClipboardSyncService.isServiceRequested(this)) {
+                android.util.Log.d("AWClippy", "[ANDROID→WINDOWS] Service was stopped by user, cancelling pending clipboard")
+                pendingClipboardText = null
+                return
+            }
             delay(100) // Check every 100ms
             attempts++
             
             val syncService = ClipboardSyncService.instance
-            if (syncService != null) {
+            if (syncService != null && ClipboardSyncService.isServiceRunning) {
                 android.util.Log.d("AWClippy", "[ANDROID→WINDOWS] ✅ Sync service available after ${attempts * 100}ms!")
                 
                 val textToSend = pendingClipboardText

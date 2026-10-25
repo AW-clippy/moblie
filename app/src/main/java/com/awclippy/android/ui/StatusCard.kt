@@ -33,7 +33,7 @@ fun StatusCard(
             // Network Status
             StatusRow(
                 label = "Network",
-                value = if (serviceRunning) "Connected ($networkName)" else networkName,
+                value = if (serviceRunning) "Connected ($networkName)" else "Disconnected",
                 enabled = serviceRunning,
                 isSearching = false
             )

@@ -18,23 +18,29 @@ class MainActivity : ComponentActivity() {
         setContent {
             AWClippyTheme {
                 var accessibilityEnabled by remember { mutableStateOf(isAccessibilityServiceEnabled()) }
-                var serviceRunning by remember { mutableStateOf(ClipboardSyncService.instance != null) }
-                var networkName by remember { mutableStateOf(ClipboardSyncService.instance?.getNetworkName() ?: "Local Network") }
-                var synchronizedPcName by remember { mutableStateOf(ClipboardSyncService.instance?.getPcName()) }
-                var isSynchronized by remember { mutableStateOf(ClipboardSyncService.instance?.isDeviceSynchronized() == true) }
-                var lastSyncTime by remember { mutableLongStateOf(ClipboardSyncService.instance?.getLastSyncTime() ?: 0L) }
+                var serviceRunning by remember { mutableStateOf(ClipboardSyncService.isServiceRunning && ClipboardSyncService.instance != null) }
+                var networkName by remember {
+                    mutableStateOf(
+                        if (serviceRunning) ClipboardSyncService.instance?.getNetworkName() ?: "Local Network"
+                        else "Disconnected"
+                    )
+                }
+                var synchronizedPcName by remember { mutableStateOf(if (serviceRunning) ClipboardSyncService.instance?.getPcName() else null) }
+                var isSynchronized by remember { mutableStateOf(serviceRunning && ClipboardSyncService.instance?.isDeviceSynchronized() == true) }
+                var lastSyncTime by remember { mutableLongStateOf(if (serviceRunning) ClipboardSyncService.instance?.getLastSyncTime() ?: 0L else 0L) }
                 
-                // Update status every 800ms
+                // Update status every 500ms
                 LaunchedEffect(Unit) {
                     while (true) {
-                        kotlinx.coroutines.delay(800)
+                        kotlinx.coroutines.delay(500)
                         val service = ClipboardSyncService.instance
+                        val running = ClipboardSyncService.isServiceRunning && service != null
                         accessibilityEnabled = isAccessibilityServiceEnabled()
-                        serviceRunning = service != null
-                        networkName = service?.getNetworkName() ?: "Local Network"
-                        synchronizedPcName = service?.getPcName()
-                        isSynchronized = service?.isDeviceSynchronized() == true
-                        lastSyncTime = service?.getLastSyncTime() ?: 0L
+                        serviceRunning = running
+                        networkName = if (running) service?.getNetworkName() ?: "Local Network" else "Disconnected"
+                        synchronizedPcName = if (running) service?.getPcName() else null
+                        isSynchronized = running && service?.isDeviceSynchronized() == true
+                        lastSyncTime = if (running) service?.getLastSyncTime() ?: 0L else 0L
                     }
                 }
                 
@@ -47,7 +53,7 @@ class MainActivity : ComponentActivity() {
                     lastSyncTime = lastSyncTime,
                     onRefresh = {
                         val service = ClipboardSyncService.instance
-                        if (service != null) {
+                        if (service != null && ClipboardSyncService.isServiceRunning) {
                             service.triggerRediscovery()
                             Toast.makeText(this@MainActivity, "Searching for Windows PC...", Toast.LENGTH_SHORT).show()
                         } else {
@@ -59,7 +65,11 @@ class MainActivity : ComponentActivity() {
                     },
                     onToggleService = {
                         toggleService()
-                        serviceRunning = ClipboardSyncService.instance != null
+                        val running = ClipboardSyncService.isServiceRunning && ClipboardSyncService.instance != null
+                        serviceRunning = running
+                        networkName = if (running) ClipboardSyncService.instance?.getNetworkName() ?: "Local Network" else "Disconnected"
+                        synchronizedPcName = if (running) ClipboardSyncService.instance?.getPcName() else null
+                        isSynchronized = running && ClipboardSyncService.instance?.isDeviceSynchronized() == true
                     },
                     onSendMessage = { message ->
                         sendToWindows(message)
@@ -80,10 +90,31 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun toggleService() {
-        val serviceRunning = ClipboardSyncService.instance != null
+        val serviceRunning = ClipboardSyncService.isServiceRunning && ClipboardSyncService.instance != null
         
         if (serviceRunning) {
-            ClipboardSyncService.instance?.stopSelf()
+            // User requested to stop service
+            ClipboardSyncService.setServiceRequested(this, false)
+            
+            // 1. Explicitly stop active instance
+            ClipboardSyncService.instance?.stopSyncService()
+            
+            // 2. Also stop via intent with ACTION_STOP_SERVICE as a backup
+            val stopIntent = Intent(this, ClipboardSyncService::class.java).apply {
+                action = ClipboardSyncService.ACTION_STOP_SERVICE
+            }
+            try {
+                startService(stopIntent)
+            } catch (_: Exception) {}
+            stopService(stopIntent)
+            
+            // 3. Immediately clear notifications from Activity context
+            try {
+                val notificationManager = getSystemService(android.app.NotificationManager::class.java)
+                notificationManager?.cancel(1)
+                notificationManager?.cancelAll()
+            } catch (_: Exception) {}
+            
             Toast.makeText(this, "Service stopped", Toast.LENGTH_SHORT).show()
         } else {
             if (!isAccessibilityServiceEnabled()) {
@@ -95,7 +126,12 @@ class MainActivity : ComponentActivity() {
                 return
             }
             
-            val intent = Intent(this, ClipboardSyncService::class.java)
+            // User requested to start service
+            ClipboardSyncService.setServiceRequested(this, true)
+            
+            val intent = Intent(this, ClipboardSyncService::class.java).apply {
+                action = ClipboardSyncService.ACTION_START_SERVICE
+            }
             startForegroundService(intent)
             
             Toast.makeText(this, "Service started", Toast.LENGTH_SHORT).show()

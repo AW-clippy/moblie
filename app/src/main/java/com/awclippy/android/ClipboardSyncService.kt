@@ -23,13 +23,31 @@ class ClipboardSyncService : Service() {
     companion object {
         private const val TAG = "AWClippy"
         private const val MAX_CLIPBOARD_SIZE = 1024 * 1024 // 1MB
+        const val ACTION_START_SERVICE = "com.awclippy.android.START_SERVICE"
+        const val ACTION_STOP_SERVICE = "com.awclippy.android.STOP_SERVICE"
+        private const val PREFS_NAME = "awclippy_prefs"
+        private const val KEY_SERVICE_ENABLED = "service_enabled"
         
         @Volatile
         var instance: ClipboardSyncService? = null
             private set
+
+        @Volatile
+        var isServiceRunning: Boolean = false
+            private set
+
+        fun isServiceRequested(context: Context): Boolean {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            return prefs.getBoolean(KEY_SERVICE_ENABLED, true)
+        }
+
+        fun setServiceRequested(context: Context, enabled: Boolean) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putBoolean(KEY_SERVICE_ENABLED, enabled).apply()
+        }
     }
 
-    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var okHttpClient: OkHttpClient? = null
     private var activeWebSocket: WebSocket? = null
     private var nsdJob: Job? = null
@@ -62,11 +80,18 @@ class ClipboardSyncService : Service() {
     @Volatile
     private var pendingClipboard: String? = null
 
+    @Volatile
+    private var isServiceStopped: Boolean = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         instance = this
+        isServiceStopped = false
+        isServiceRunning = true
+        serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        setServiceRequested(this, true)
         Log.d(TAG, "ClipboardSyncService starting...")
         
         currentNetworkName = getActiveNetworkName()
@@ -86,6 +111,7 @@ class ClipboardSyncService : Service() {
     }
     
     private fun startDiscoveryJobs() {
+        if (isServiceStopped || !isServiceRunning) return
         nsdJob?.cancel()
         nsdJob = serviceScope.launch {
             startNsdDiscovery()
@@ -93,10 +119,12 @@ class ClipboardSyncService : Service() {
     }
 
     private fun startHeartbeatMonitor() {
+        if (isServiceStopped || !isServiceRunning) return
         heartbeatJob?.cancel()
         heartbeatJob = serviceScope.launch {
-            while (isActive) {
+            while (isActive && !isServiceStopped && isServiceRunning) {
                 delay(10000) // Check every 10 seconds
+                if (isServiceStopped || !isServiceRunning) break
                 
                 // Refresh network name
                 val updatedNetwork = getActiveNetworkName()
@@ -110,7 +138,7 @@ class ClipboardSyncService : Service() {
                 }
 
                 // If disconnected but we have target address, attempt reconnect
-                if (!isSynchronized && activeWebSocket == null) {
+                if (!isSynchronized && activeWebSocket == null && !isServiceStopped) {
                     val target = windowsPcAddress
                     if (target != null) {
                         connectWebSocket(target)
@@ -121,6 +149,7 @@ class ClipboardSyncService : Service() {
     }
 
     fun triggerRediscovery() {
+        if (isServiceStopped || !isServiceRunning) return
         Log.d(TAG, "Triggering re-discovery of Windows PC...")
         startDiscoveryJobs()
     }
@@ -199,7 +228,20 @@ class ClipboardSyncService : Service() {
         }
     }
 
+    private fun createStopServicePendingIntent(): android.app.PendingIntent {
+        val stopIntent = Intent(this, ClipboardSyncService::class.java).apply {
+            action = ACTION_STOP_SERVICE
+        }
+        return android.app.PendingIntent.getService(
+            this,
+            1,
+            stopIntent,
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
+    }
+
     private fun startForegroundNotification() {
+        if (isServiceStopped || !isServiceRunning) return
         val channelId = "awclippy_sync"
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -212,7 +254,7 @@ class ClipboardSyncService : Service() {
             }
             
             val notificationManager = getSystemService(android.app.NotificationManager::class.java)
-            notificationManager.createNotificationChannel(channel)
+            notificationManager?.createNotificationChannel(channel)
         }
         
         val notificationIntent = Intent(this, MainActivity::class.java).apply {
@@ -236,6 +278,7 @@ class ClipboardSyncService : Service() {
             .setContentText(initialText)
             .setSmallIcon(NotificationIconHelper.getNotificationIcon())
             .setContentIntent(pendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop Service", createStopServicePendingIntent())
             .setOngoing(true)
             .build()
         
@@ -243,26 +286,83 @@ class ClipboardSyncService : Service() {
     }
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP_SERVICE) {
+            Log.d(TAG, "onStartCommand: Received ACTION_STOP_SERVICE")
+            setServiceRequested(this, false)
+            stopSyncService()
+            return START_NOT_STICKY
+        }
+        
+        // Reset stopped flag when restarted
+        if (isServiceStopped) {
+            isServiceStopped = false
+            isServiceRunning = true
+            instance = this
+        }
+        setServiceRequested(this, true)
+
         intent?.getStringExtra("clipboard_text")?.let { text ->
-            serviceScope.launch {
-                sendClipboard(text)
+            if (!isServiceStopped && isServiceRunning) {
+                serviceScope.launch {
+                    sendClipboard(text)
+                }
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private var nsdDiscoveryListener: android.net.nsd.NsdManager.DiscoveryListener? = null
     private var nsdRegistrationListener: android.net.nsd.NsdManager.RegistrationListener? = null
 
-    override fun onDestroy() {
+    fun stopSyncService() {
+        Log.d(TAG, "ClipboardSyncService stopSyncService() called - stopping everything cleanly")
+        
+        isServiceStopped = true
+        isServiceRunning = false
         instance = null
+        
+        isSynchronized = false
+        synchronizedPcName = null
+        windowsPcAddress = null
+        pendingClipboard = null
+
+        // 1. Stop foreground mode and remove notification immediately
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(Service.STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping foreground: ${e.message}")
+        }
+        
+        // Cancel notification explicitly as a backup
+        try {
+            val notificationManager = getSystemService(android.app.NotificationManager::class.java)
+            notificationManager?.cancel(1)
+            notificationManager?.cancelAll()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cancelling notification: ${e.message}")
+        }
+        
+        // 2. Release multicast lock
         releaseMulticastLock()
         
+        // 3. Immediately cancel active WebSocket and cancel OkHttpClient
         try {
-            activeWebSocket?.close(1000, "Service destroyed")
+            activeWebSocket?.cancel()
         } catch (_: Exception) {}
         activeWebSocket = null
 
+        try {
+            okHttpClient?.dispatcher?.cancelAll()
+            okHttpClient?.connectionPool?.evictAll()
+        } catch (_: Exception) {}
+        okHttpClient = null
+
+        // 4. Stop NSD discovery and unregister service
         val nsdManager = getSystemService(NSD_SERVICE) as? android.net.nsd.NsdManager
         nsdDiscoveryListener?.let {
             try { nsdManager?.stopServiceDiscovery(it) } catch (_: Exception) {}
@@ -273,10 +373,22 @@ class ClipboardSyncService : Service() {
         nsdDiscoveryListener = null
         nsdRegistrationListener = null
 
+        // 5. Cancel all coroutine jobs
         nsdJob?.cancel()
         retryJob?.cancel()
         heartbeatJob?.cancel()
         serviceScope.cancel()
+        
+        // 6. Stop the service
+        stopSelf()
+        Log.d(TAG, "ClipboardSyncService fully stopped and cleaned up")
+    }
+
+    override fun onDestroy() {
+        Log.d(TAG, "ClipboardSyncService onDestroy() called")
+        if (!isServiceStopped) {
+            stopSyncService()
+        }
         super.onDestroy()
     }
     
@@ -304,6 +416,10 @@ class ClipboardSyncService : Service() {
     }
     
     fun sendClipboardFromAccessibility(text: String) {
+        if (isServiceStopped || !isServiceRunning) {
+            Log.d(TAG, "[ANDROID→WINDOWS] Service is stopped, ignoring clipboard send request")
+            return
+        }
         Log.d(TAG, "[ANDROID→WINDOWS] sendClipboardFromAccessibility called with ${text.length} chars")
         
         if (!isSynchronized || activeWebSocket == null) {
@@ -327,9 +443,14 @@ class ClipboardSyncService : Service() {
         var attempts = 0
         val maxAttempts = 100 // 10 seconds total
         
-        while (attempts < maxAttempts && pendingClipboard != null) {
+        while (attempts < maxAttempts && pendingClipboard != null && !isServiceStopped && isServiceRunning) {
             delay(100)
             attempts++
+            
+            if (isServiceStopped || !isServiceRunning) {
+                pendingClipboard = null
+                return
+            }
             
             if (isSynchronized && activeWebSocket != null) {
                 val textToSend = pendingClipboard
@@ -350,10 +471,12 @@ class ClipboardSyncService : Service() {
     }
     
     fun hasWindowsDevice(): Boolean {
-        return isSynchronized && activeWebSocket != null
+        return isSynchronized && activeWebSocket != null && !isServiceStopped && isServiceRunning
     }
 
     private fun connectWebSocket(target: InetSocketAddress) {
+        if (isServiceStopped || !isServiceRunning) return
+        
         if (activeWebSocket != null && isSynchronized && windowsPcAddress?.address == target.address) {
             return
         }
@@ -377,6 +500,10 @@ class ClipboardSyncService : Service() {
         val request = Request.Builder().url(url).build()
         activeWebSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (isServiceStopped || !isServiceRunning) {
+                    webSocket.cancel()
+                    return
+                }
                 Log.d(TAG, "[WEBSOCKET] ✅ Link established with Windows PC at $host:$port")
                 windowsPcAddress = target
                 
@@ -392,6 +519,7 @@ class ClipboardSyncService : Service() {
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                if (isServiceStopped || !isServiceRunning) return
                 try {
                     val decrypted = crypto.decrypt(bytes.toByteArray())
                     handleDecryptedPayload(decrypted)
@@ -401,22 +529,26 @@ class ClipboardSyncService : Service() {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (isServiceStopped || !isServiceRunning) return
                 handleDecryptedPayload(text)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "[WEBSOCKET] Link closed ($code): $reason")
+                if (isServiceStopped || !isServiceRunning) return
                 handleDisconnection()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "[WEBSOCKET] Link failure: ${t.message}")
+                if (isServiceStopped || !isServiceRunning) return
                 handleDisconnection()
             }
         })
     }
 
     private fun handleDisconnection() {
+        if (isServiceStopped || !isServiceRunning) return
         activeWebSocket = null
         isSynchronized = false
         synchronizedPcName = null
@@ -424,6 +556,7 @@ class ClipboardSyncService : Service() {
     }
 
     private fun handleDecryptedPayload(text: String) {
+        if (isServiceStopped || !isServiceRunning) return
         val trimmed = text.trim()
         if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
             try {
@@ -491,6 +624,7 @@ class ClipboardSyncService : Service() {
     }
 
     private suspend fun startNsdDiscovery() {
+        if (isServiceStopped || !isServiceRunning) return
         try {
             val nsdManager = getSystemService(NSD_SERVICE) as android.net.nsd.NsdManager
             
@@ -500,6 +634,7 @@ class ClipboardSyncService : Service() {
                 }
 
                 override fun onServiceFound(serviceInfo: android.net.nsd.NsdServiceInfo) {
+                    if (isServiceStopped || !isServiceRunning) return
                     val serviceName = serviceInfo.serviceName
                     Log.d(TAG, "Service found: $serviceName")
                     
@@ -512,6 +647,7 @@ class ClipboardSyncService : Service() {
                                 object : android.net.nsd.NsdManager.ServiceInfoCallback {
                                     override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {}
                                     override fun onServiceUpdated(serviceInfo: android.net.nsd.NsdServiceInfo) {
+                                        if (isServiceStopped || !isServiceRunning) return
                                         handleResolvedService(serviceInfo)
                                     }
                                     override fun onServiceLost() {}
@@ -525,6 +661,7 @@ class ClipboardSyncService : Service() {
                                     Log.w(TAG, "NSD resolve failed for ${serviceInfo.serviceName}: $errorCode")
                                 }
                                 override fun onServiceResolved(serviceInfo: android.net.nsd.NsdServiceInfo) {
+                                    if (isServiceStopped || !isServiceRunning) return
                                     Log.d(TAG, "NSD resolved: ${serviceInfo.serviceName} at ${serviceInfo.host}:${serviceInfo.port}")
                                     handleResolvedService(serviceInfo)
                                 }
@@ -554,6 +691,7 @@ class ClipboardSyncService : Service() {
     }
     
     private fun handleResolvedService(serviceInfo: android.net.nsd.NsdServiceInfo) {
+        if (isServiceStopped || !isServiceRunning) return
         val hostAddresses = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             @Suppress("NewApi")
             serviceInfo.hostAddresses
@@ -583,6 +721,7 @@ class ClipboardSyncService : Service() {
     }
 
     private fun registerNsdService(nsdManager: android.net.nsd.NsdManager) {
+        if (isServiceStopped || !isServiceRunning) return
         try {
             val localIp = getLocalIpAddress()
             val ipSuffix = localIp?.hostAddress?.replace(".", "-") ?: "unknown"
@@ -614,6 +753,10 @@ class ClipboardSyncService : Service() {
     }
     
     private fun updateNotification(message: String) {
+        if (isServiceStopped || !isServiceRunning) {
+            Log.d(TAG, "Skipping notification update because service is stopped")
+            return
+        }
         val channelId = "awclippy_sync"
         
         val notificationIntent = Intent(this, MainActivity::class.java).apply {
@@ -631,11 +774,12 @@ class ClipboardSyncService : Service() {
             .setContentText(message)
             .setSmallIcon(NotificationIconHelper.getNotificationIcon())
             .setContentIntent(pendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop Service", createStopServicePendingIntent())
             .setOngoing(true)
             .build()
         
         val notificationManager = getSystemService(android.app.NotificationManager::class.java)
-        notificationManager.notify(1, notification)
+        notificationManager?.notify(1, notification)
     }
 
     private fun getLocalIpAddress(): InetAddress? {
@@ -658,6 +802,7 @@ class ClipboardSyncService : Service() {
     }
 
     suspend fun sendClipboard(text: String) {
+        if (isServiceStopped || !isServiceRunning) return
         val ws = activeWebSocket
         if (ws == null || !isSynchronized) {
             Log.w(TAG, "[ANDROID→WINDOWS] ⏳ Not synchronized over WebSocket yet, queueing clipboard...")
