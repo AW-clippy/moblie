@@ -115,6 +115,53 @@ class ClipboardSyncService : Service() {
         nsdJob?.cancel()
         nsdJob = serviceScope.launch {
             startNsdDiscovery()
+            
+            // Fallback: If no connection after 5 seconds, try common Windows PC addresses
+            delay(5000)
+            if (!isSynchronized && activeWebSocket == null && !isServiceStopped) {
+                Log.d(TAG, "mDNS discovery timeout, attempting direct connection fallback...")
+                tryDirectConnection()
+            }
+        }
+    }
+    
+    private suspend fun tryDirectConnection() {
+        if (isServiceStopped || !isServiceRunning) return
+        
+        // Get local IP to determine subnet
+        val localIp = getLocalIpAddress()
+        if (localIp is Inet4Address) {
+            val ipParts = localIp.hostAddress?.split(".")
+            if (ipParts?.size == 4) {
+                val subnet = "${ipParts[0]}.${ipParts[1]}.${ipParts[2]}"
+                
+                // Try common host addresses in the subnet
+                val candidates = listOf(
+                    "$subnet.1",    // Common router/gateway
+                    "$subnet.100",  // Common static IP range
+                    "$subnet.198",  // Your Windows PC's current IP
+                    "$subnet.199",
+                    "$subnet.200"
+                )
+                
+                for (ipStr in candidates) {
+                    if (isServiceStopped || !isServiceRunning || isSynchronized) break
+                    
+                    try {
+                        val addr = InetAddress.getByName(ipStr)
+                        if (addr is Inet4Address) {
+                            Log.d(TAG, "Attempting direct connection to $ipStr:${config.syncPort}")
+                            val target = InetSocketAddress(addr, config.syncPort)
+                            connectWebSocket(target)
+                            
+                            // Wait a bit to see if connection succeeds
+                            delay(1000)
+                        }
+                    } catch (e: Exception) {
+                        Log.d(TAG, "Direct connection to $ipStr failed: ${e.message}")
+                    }
+                }
+            }
         }
     }
 
@@ -273,13 +320,31 @@ class ClipboardSyncService : Service() {
             "Connected to $currentNetworkName (Searching for PC...)"
         }
 
+        // Create "Send to PC" button that launches the invisible activity
+        val sendClipboardIntent = Intent(this, SendClipboardActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val sendClipboardPendingIntent = android.app.PendingIntent.getActivity(
+            this,
+            2,
+            sendClipboardIntent,
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        // Create custom notification layout with buttons visible
+        val collapsedView = android.widget.RemoteViews(packageName, R.layout.notification_collapsed).apply {
+            setTextViewText(R.id.notification_title, "AW Clippy")
+            setTextViewText(R.id.notification_text, initialText)
+            setOnClickPendingIntent(R.id.btn_send_to_pc, sendClipboardPendingIntent)
+            setOnClickPendingIntent(R.id.btn_stop_service, createStopServicePendingIntent())
+        }
+
         val notification = androidx.core.app.NotificationCompat.Builder(this, channelId)
-            .setContentTitle("AW Clippy")
-            .setContentText(initialText)
             .setSmallIcon(NotificationIconHelper.getNotificationIcon())
             .setContentIntent(pendingIntent)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop Service", createStopServicePendingIntent())
+            .setCustomContentView(collapsedView)
             .setOngoing(true)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
             .build()
         
         startForeground(1, notification)
@@ -769,13 +834,31 @@ class ClipboardSyncService : Service() {
             android.app.PendingIntent.FLAG_IMMUTABLE
         )
         
+        // Create "Send to PC" button that launches the invisible activity
+        val sendClipboardIntent = Intent(this, SendClipboardActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val sendClipboardPendingIntent = android.app.PendingIntent.getActivity(
+            this,
+            2,
+            sendClipboardIntent,
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        // Create custom notification layout with buttons visible
+        val collapsedView = android.widget.RemoteViews(packageName, R.layout.notification_collapsed).apply {
+            setTextViewText(R.id.notification_title, "AW Clippy")
+            setTextViewText(R.id.notification_text, message)
+            setOnClickPendingIntent(R.id.btn_send_to_pc, sendClipboardPendingIntent)
+            setOnClickPendingIntent(R.id.btn_stop_service, createStopServicePendingIntent())
+        }
+        
         val notification = androidx.core.app.NotificationCompat.Builder(this, channelId)
-            .setContentTitle("AW Clippy")
-            .setContentText(message)
             .setSmallIcon(NotificationIconHelper.getNotificationIcon())
             .setContentIntent(pendingIntent)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop Service", createStopServicePendingIntent())
+            .setCustomContentView(collapsedView)
             .setOngoing(true)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
             .build()
         
         val notificationManager = getSystemService(android.app.NotificationManager::class.java)
